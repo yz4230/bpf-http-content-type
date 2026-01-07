@@ -1,0 +1,57 @@
+[tasks.gen-vmlinux]
+run = [
+  "mkdir -p src",
+  "bpftool btf dump file /sys/kernel/btf/vmlinux format c > src/vmlinux.h",
+]
+
+[tasks.gen-http-response]
+run = "xh http://www.example.com -p hb -o ./scripts/http_response.txt"
+
+[tasks.gen-packet]
+run = "uv run scripts/gen-packet.py"
+
+[tasks.build-debug]
+sources = ["src/parse.c"]
+run = "clang -g -Wall src/parse.c -o bin/parse"
+
+[tasks.build-debug-bpf]
+depends = ["gen-vmlinux"]
+sources = ["src/parse.bpf.c", "src/vmlinux.h"]
+run = "clang -O2 -g -Wall -target bpf -c src/parse.bpf.c -o bin/parse.bpf.o -Isrc"
+
+[tasks.run-debug]
+depends = "build-debug"
+run = "./bin/parse"
+
+[tasks.up]
+description = "Tear up experiment environment"
+run = [
+  "sudo ip netns add ns1",
+  "sudo ip netns add ns2",
+  "sudo ip link add veth1 type veth peer name veth2",
+  "sudo ip link set veth1 netns ns1",
+  "sudo ip link set veth2 netns ns2",
+  "sudo ip netns exec ns1 ip addr add 2001:db8::1/64 dev veth1",
+  "sudo ip netns exec ns2 ip addr add 2001:db8::2/64 dev veth2",
+  "sudo ip netns exec ns1 ip link set dev veth1 up",
+  "sudo ip netns exec ns2 ip link set dev veth2 up",
+  "sudo ip netns exec ns1 ip route add default via 2001:db8::2",
+  "sudo ip netns exec ns2 ip route add default via 2001:db8::1",
+]
+
+[tasks.down]
+description = "Tear down experiment environment"
+run = ["sudo ip netns del ns1", "sudo ip netns del ns2"]
+
+[tasks.setup]
+description = "Set up experiment environment"
+depends = ["build-debug-bpf", "up"]
+run = [
+  "sudo ip netns exec ns1 ip route add 2001:db8::3 encap seg6 mode encap segs 2001:db8::beef,2001:db8::cafe,2001:db8::babe dev veth1",
+  "sudo ip netns exec ns1 ip route add 2001:db8::beef encap bpf out obj bin/parse.bpf.o section lwt_xmit dev veth1",
+  "sudo ip netns exec ns1 ip route add 2001:db8::2 encap bpf out obj bin/parse.bpf.o section lwt_xmit dev veth1",
+]
+
+[tasks.replace]
+depends = "build-debug-bpf"
+run = "sudo ip netns exec ns1 ip route replace 2001:db8::2 encap bpf out obj bin/parse.bpf.o section lwt_xmit dev veth1"
