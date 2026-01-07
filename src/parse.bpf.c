@@ -14,6 +14,63 @@
 
 #define IPPROTO_ROUTING 43
 
+// "content-type:" pre-lowercased
+static const char ct_lower[] = "content-type:";
+
+struct ct_scan_ctx {
+    const u8 *buf;
+    u32 want;
+    int at_line_start;
+    int match_idx;
+    int found;
+    int stop;
+    u32 pos_after_match;
+};
+
+static long ct_scan_cb(u32 idx, void *ctx_ptr) {
+    struct ct_scan_ctx *ctx = (struct ct_scan_ctx *)ctx_ptr;
+    const int ct_match_len = sizeof(ct_lower) - 1;
+
+    if (ctx->stop || ctx->found) return 1;
+    // bpf_loop's index isn't range-tracked by the verifier, so we must
+    // explicitly bound it before doing a variable-offset stack read.
+    u32 pos = idx & (MAX_PAYLOAD_SCAN - 1);
+    if (pos >= ctx->want) return 1;
+
+    u8 c = ctx->buf[pos];
+
+    // End of HTTP headers (empty line)
+    if (ctx->at_line_start && (c == '\r' || c == '\n')) {
+        ctx->stop = 1;
+        return 1;
+    }
+
+    if (ctx->at_line_start) {
+        u8 lc = TOLOWER(c);
+        ctx->match_idx = (lc == ct_lower[0]) ? 1 : 0;
+        ctx->at_line_start = 0;
+    } else if (ctx->match_idx > 0 && ctx->match_idx < ct_match_len) {
+        u8 lc = TOLOWER(c);
+        if (lc == ct_lower[ctx->match_idx]) {
+            ctx->match_idx++;
+            if (ctx->match_idx == ct_match_len) {
+                ctx->found = 1;
+                ctx->pos_after_match = pos + 1;
+                return 1;
+            }
+        } else {
+            ctx->match_idx = 0;
+        }
+    }
+
+    if (c == '\n') {
+        ctx->at_line_start = 1;
+        ctx->match_idx = 0;
+    }
+
+    return 0;
+}
+
 static int search_headers(void *data, void *data_end,
                           struct ipv6hdr **ip6h, struct ipv6_sr_hdr **srh, struct tcphdr **tcph) {
     u8 *buf = (u8 *)data;
@@ -103,51 +160,20 @@ int bpf_prog(struct __sk_buff *skb) {
     }
 
     // scan headers for Content-Type (single-pass, verifier-friendly)
-    // "content-type:" pre-lowercased
-    const char ct_lower[] = "content-type:";
-    const int ct_match_len = sizeof(ct_lower) - 1;
-
-    u32 pos = 0;            // current position in buffer
-    int at_line_start = 1;  // are we at the start of a line?
-    int match_idx = 0;      // how many chars of ct_lower matched so far
-    int found = 0;
-
-    for (int iter = 0; iter < MAX_PAYLOAD_SCAN; iter++) {
-        if (pos >= want) break;
-        if (found) break;
-
-        u8 c = buf[pos];
-
-        // Check for end of HTTP headers (empty line)
-        if (at_line_start && (c == '\r' || c == '\n')) break;
-
-        if (at_line_start) {
-            // Start matching Content-Type:
-            u8 lc = TOLOWER(c);
-            match_idx = (lc == ct_lower[0]) ? 1 : 0;
-            at_line_start = 0;
-        } else if (match_idx > 0 && match_idx < ct_match_len) {
-            u8 lc = TOLOWER(c);
-            if (lc == ct_lower[match_idx]) {
-                match_idx++;
-                if (match_idx == ct_match_len) {
-                    found = 1;
-                }
-            } else {
-                match_idx = 0;
-            }
-        }
-
-        // Advance to next char, detect newlines
-        if (c == '\n') {
-            at_line_start = 1;
-            match_idx = 0;
-        }
-        pos++;
-    }
+    struct ct_scan_ctx scan_ctx = {
+        .buf = buf,
+        .want = want,
+        .at_line_start = 1,
+        .match_idx = 0,
+        .found = 0,
+        .stop = 0,
+        .pos_after_match = 0,
+    };
+    bpf_loop(MAX_PAYLOAD_SCAN, ct_scan_cb, &scan_ctx, 0);
 
     // print content type line if found
-    if (found) {
+    if (scan_ctx.found) {
+        u32 pos = scan_ctx.pos_after_match;
         // extract value until end of line
         u8 ct[MAX_CT_LINE];
         u32 ct_off = 0;
