@@ -5,6 +5,10 @@
 #include <bpf/bpf_helpers.h>
 // clang-format on
 
+extern int bpf_strcmp(const char *s1, const char *s2) __ksym;
+extern int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz) __ksym;
+extern int bpf_strcasestr(const char *s1, u32 len1, const char *s2, u32 len2) __ksym;
+
 #define MAX_HDR_DEPTH 4
 #define MAX_HTTP_HEADERS 8
 #define MAX_PAYLOAD_SCAN 128
@@ -15,7 +19,7 @@
 #define IPPROTO_ROUTING 43
 
 // "content-type:" pre-lowercased
-static const char ct_lower[] = "content-type:";
+static const char ct_lower[] = "content-type: ";
 
 struct ct_scan_ctx {
     const u8 *buf;
@@ -201,11 +205,11 @@ int bpf_prog(struct __sk_buff *skb) {
     bpf_loop(MAX_PAYLOAD_SCAN, ct_scan_cb, &scan_ctx, 0);
 
     // print content type line if found
+    u8 ct[MAX_CT_LINE];
+    u32 ct_off = 0;
     if (scan_ctx.found) {
         u32 pos = scan_ctx.pos_after_match;
         // extract value until end of line
-        u8 ct[MAX_CT_LINE];
-        u32 ct_off = 0;
         for (u32 i = 0; i < MAX_CT_LINE - 1; i++) {
             u32 idx = pos + i;
             if (idx >= want) break;
@@ -213,8 +217,17 @@ int bpf_prog(struct __sk_buff *skb) {
             if (c == '\r' || c == '\n') break;
             ct[ct_off++] = c;
         }
+        ct_off &= (MAX_CT_LINE - 1);
         ct[ct_off] = '\0';
         bpf_printk("Content-Type:%s\n", ct);
+    }
+
+    const char mp4[] = "video/mp4";
+    if (bpf_strcmp((const char *)ct, mp4) == 0) {
+        segleft_adv++;  // advance one extra segment for MP4
+        bpf_printk("MP4 Content-Type detected, performing SRH reroute\n");
+    } else {
+        bpf_printk("Non-MP4 or no Content-Type detected, skipping SRH reroute\n");
     }
 
 reroute:

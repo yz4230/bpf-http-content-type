@@ -7,6 +7,19 @@ run = "xh http://www.example.com -p hb -o ./scripts/http_response.txt"
 [tasks.gen-packet]
 run = "uv run scripts/gen-packet.py"
 
+[tasks.build-module]
+dir = "module"
+run = "make all"
+
+[tasks.rm-module]
+dir = "module"
+run = "sudo rmmod hello.ko"
+
+[tasks.reload-module]
+depends = "build-module"
+dir = "module"
+run = ["sudo rmmod hello.ko || true", "sudo insmod hello.ko"]
+
 [tasks.build-bpf]
 depends = ["gen-vmlinux"]
 sources = ["src/parse.bpf.c", "src/vmlinux.h"]
@@ -15,7 +28,7 @@ run = "clang -O2 -g -Wall -target bpf -c src/parse.bpf.c -o bin/parse.bpf.o -Isr
 [tasks.tearup]
 alias = "tup"
 description = "Tear up the environment"
-depends = ["build-bpf"]
+depends = ["build-bpf", "reload-module"]
 run = "sudo ./scripts/tearup.sh"
 
 [tasks.teardown]
@@ -26,5 +39,9 @@ run = "sudo ./scripts/teardown.sh"
 [tasks.replace]
 alias = "rp"
 description = "Replace the BPF program in ns3"
-depends = ["build-bpf"]
-run = "sudo ./scripts/replace.sh"
+run = [
+    "sudo ./scripts/replace.sh del",
+    { task = "build-bpf" },
+    { task = "reload-module" },
+    "sudo ./scripts/replace.sh add",
+]
