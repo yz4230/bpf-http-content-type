@@ -103,10 +103,7 @@ static int search_headers(void *data, void *data_end,
             case IPPROTO_ROUTING: {
                 struct ipv6_rt_hdr *rth = (struct ipv6_rt_hdr *)(buf + offset);
                 if ((void *)(rth + 1) > data_end) return -1;
-
-                if (rth->type == 4)
-                    *srh_off = offset;
-
+                if (rth->type == 4) *srh_off = offset;
                 nexthdr = rth->nexthdr;
                 u32 hdr_bytes = (u32)(rth->hdrlen + 1) * 8;
                 if ((void *)(buf + offset + hdr_bytes) > data_end) return -1;
@@ -118,12 +115,12 @@ static int search_headers(void *data, void *data_end,
                 if ((void *)(buf + offset + sizeof(struct tcphdr)) > data_end) return -1;
                 return 0;
             }
-            default:
-                return -1;
+            default:  // unsupported protocol
+                return 0;
         }
     }
 
-    return -1;
+    return 0;
 }
 
 SEC("lwt_xmit")
@@ -144,30 +141,31 @@ int bpf_prog(struct __sk_buff *skb) {
 
     struct ipv6hdr *ip6h = (struct ipv6hdr *)(data + ip6h_off);
     struct ipv6_sr_hdr *srh = (struct ipv6_sr_hdr *)(data + srh_off);
-    struct tcphdr *tcph = (struct tcphdr *)(data + tcph_off);
 
     if (!(data <= (void *)ip6h && (void *)(ip6h + 1) <= data_end &&
-          data <= (void *)srh && (void *)(srh + 1) <= data_end &&
-          data <= (void *)tcph && (void *)(tcph + 1) <= data_end)) {
-        bpf_printk("Headers out of bounds\n");
+          data <= (void *)srh && (void *)(srh + 1) <= data_end)) {
+        bpf_printk("IPv6 or SRH header out of bounds\n");
         return BPF_OK;
+    }
+
+    struct tcphdr *tcph = (struct tcphdr *)(data + tcph_off);
+    if (!(data <= (void *)tcph && (void *)(tcph + 1) <= data_end)) {
+        bpf_printk("TCP header out of bounds\n");
+        goto reroute;
     }
 
     bpf_printk(
         "Found IPv6 header\n"
         "    src: %pI6\n"
         "    dst: %pI6\n",
-        (u64)&ip6h->saddr, (u64)&ip6h->daddr);
-    bpf_printk(
+        "Found SRH header\n"
+        "    segments_left: %d\n",
         "Found TCP header\n"
         "    src port: %d\n"
         "    dst port: %d\n",
+        (u64)&ip6h->saddr, (u64)&ip6h->daddr,
+        srh->segments_left,
         bpf_ntohs(tcph->source), bpf_ntohs(tcph->dest));
-
-    bpf_printk(
-        "Found SRH header\n"
-        "    segments_left: %d\n",
-        srh->segments_left);
 
     ip6h->hop_limit = 42;  // for easy identification of processed packets
 
