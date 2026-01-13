@@ -1,4 +1,5 @@
+*.local
 /.venv
 /.vscode
 /bin
-*.local
+/src/vmlinux.h
