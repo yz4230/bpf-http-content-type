@@ -10,7 +10,7 @@ run = "uv run scripts/gen-packet.py"
 [tasks.build-bpf]
 depends = ["gen-vmlinux"]
 sources = ["src/parse.bpf.c", "src/vmlinux.h"]
-run = "clang -O1 -g -Wall -target bpf -c src/parse.bpf.c -o bin/parse.bpf.o -Isrc"
+run = "clang -O2 -g -Wall -target bpf -c src/parse.bpf.c -o bin/parse.bpf.o -Isrc"
 
 [tasks.tearup]
 alias = "tup"

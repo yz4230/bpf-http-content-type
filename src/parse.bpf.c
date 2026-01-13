@@ -72,46 +72,46 @@ static long ct_scan_cb(u32 idx, void *ctx_ptr) {
 }
 
 static int search_headers(void *data, void *data_end,
-                          struct ipv6hdr **ip6h, struct ipv6_sr_hdr **srh, struct tcphdr **tcph) {
+                          u32 *ip6h_off, u32 *srh_off, u32 *tcph_off) {
     u8 *buf = (u8 *)data;
     u8 nexthdr = IPPROTO_IPV6;  // assume starting with IPv6
-    struct ipv6hdr *last_ip6h = NULL;
+    u64 offset = 0;
 
     for (u32 depth = 0; depth < MAX_HDR_DEPTH; depth++) {
         switch (nexthdr) {
             case IPPROTO_IPIP: {  // IPv4-in-IPv6
-                struct iphdr *iph = (struct iphdr *)(buf);
+                struct iphdr *iph = (struct iphdr *)(buf + offset);
                 if ((void *)(iph + 1) > data_end) return -1;
                 nexthdr = iph->protocol;
                 u32 ihl_bytes = (u32)(iph->ihl) * 4;
-                if ((void *)(buf + ihl_bytes) > data_end) return -1;
-                buf += ihl_bytes;
+                if ((void *)(buf + offset + ihl_bytes) > data_end) return -1;
+                offset += ihl_bytes;
                 break;
             }
             case IPPROTO_IPV6: {
-                last_ip6h = (struct ipv6hdr *)(buf);
-                if (!*ip6h) *ip6h = last_ip6h;
-                if ((void *)(last_ip6h + 1) > data_end) return -1;
-                nexthdr = last_ip6h->nexthdr;
-                buf += sizeof(struct ipv6hdr);
+                if (*ip6h_off == 0) *ip6h_off = offset;
+                struct ipv6hdr *ip6h = (struct ipv6hdr *)(buf + offset);
+                if ((void *)(ip6h + 1) > data_end) return -1;
+                nexthdr = ip6h->nexthdr;
+                offset += sizeof(struct ipv6hdr);
                 break;
             }
             case IPPROTO_ROUTING: {
-                struct ipv6_rt_hdr *rth = (struct ipv6_rt_hdr *)(buf);
+                struct ipv6_rt_hdr *rth = (struct ipv6_rt_hdr *)(buf + offset);
                 if ((void *)(rth + 1) > data_end) return -1;
 
                 if (rth->type == 4)
-                    *srh = (struct ipv6_sr_hdr *)(buf);
+                    *srh_off = offset;
 
                 nexthdr = rth->nexthdr;
                 u32 hdr_bytes = (u32)(rth->hdrlen + 1) * 8;
-                if ((void *)(buf + hdr_bytes) > data_end) return -1;
-                buf += hdr_bytes;
+                if ((void *)(buf + offset + hdr_bytes) > data_end) return -1;
+                offset += hdr_bytes;
                 break;
             }
             case IPPROTO_TCP: {
-                *tcph = (struct tcphdr *)(buf);
-                if ((void *)(*tcph + 1) > data_end) return -1;
+                *tcph_off = offset;
+                if ((void *)(buf + offset + sizeof(struct tcphdr)) > data_end) return -1;
                 return 0;
             }
             default:
@@ -124,50 +124,29 @@ static int search_headers(void *data, void *data_end,
 
 SEC("lwt_xmit")
 int bpf_prog(struct __sk_buff *skb) {
-    void *data = (void *)(u64)skb->data;
-    void *data_end = (void *)(u64)skb->data_end;
+    void *data, *data_end;
 
-    bpf_printk("SKB len: %d\n", skb->len);
+    bpf_printk("xmit triggered, skb len: %d\n", skb->len);
 
-    struct ipv6hdr *ip6h = NULL;
-    struct ipv6_sr_hdr *srh = NULL;
-    struct tcphdr *tcph = NULL;
-    if (search_headers(data, data_end, &ip6h, &srh, &tcph) < 0) {
+    data = (void *)(u64)skb->data;
+    data_end = (void *)(u64)skb->data_end;
+
+    u32 ip6h_off = 0, srh_off = 0, tcph_off = 0;
+    if (search_headers(data, data_end, &ip6h_off, &srh_off, &tcph_off) < 0) {
         bpf_printk("Failed to find TCP header\n");
         return BPF_OK;
     }
 
-    if (!ip6h || !tcph) {
-        bpf_printk("Invalid headers\n");
+    struct ipv6hdr *ip6h = (struct ipv6hdr *)(data + ip6h_off);
+    struct ipv6_sr_hdr *srh = (struct ipv6_sr_hdr *)(data + srh_off);
+    struct tcphdr *tcph = (struct tcphdr *)(data + tcph_off);
+
+    if (!(data <= (void *)ip6h && (void *)(ip6h + 1) <= data_end &&
+          data <= (void *)srh && (void *)(srh + 1) <= data_end &&
+          data <= (void *)tcph && (void *)(tcph + 1) <= data_end)) {
+        bpf_printk("Headers out of bounds\n");
         return BPF_OK;
     }
-
-    if (!((void *)(ip6h + 1) <= data_end)) {
-        bpf_printk("IPv6 header out of bounds\n");
-        return BPF_OK;
-    }
-
-    if (!((void *)(tcph + 1) <= data_end)) {
-        bpf_printk("TCP header out of bounds\n");
-        return BPF_OK;
-    }
-
-    if (srh && (void *)(srh + 1) <= data_end) {
-        bpf_printk(
-            "Found SRH header\n"
-            "    segments_left: %d\n",
-            srh->segments_left);
-
-        srh->segments_left--;
-        bpf_printk("    decremented segments_left: %d\n", srh->segments_left);
-        struct in6_addr *new_dst = srh->segments + srh->segments_left;
-        if (data <= (void *)new_dst && (void *)(new_dst + 1) <= data_end) {
-            bpf_printk("    new dst: %pI6\n", (u64)new_dst);
-            ip6h->daddr = *new_dst;
-        }
-    }
-
-    ip6h->hop_limit = 42;
 
     bpf_printk(
         "Found IPv6 header\n"
@@ -180,16 +159,22 @@ int bpf_prog(struct __sk_buff *skb) {
         "    dst port: %d\n",
         bpf_ntohs(tcph->source), bpf_ntohs(tcph->dest));
 
-    // if ack, skip payload processing
-    if (tcph->ack) {
-        bpf_printk("TCP ACK packet, skipping payload processing\n");
-        return BPF_LWT_REROUTE;
-    }
+    bpf_printk(
+        "Found SRH header\n"
+        "    segments_left: %d\n",
+        srh->segments_left);
+
+    ip6h->hop_limit = 42;  // for easy identification of processed packets
 
     u64 payload_off = (u64)((void *)tcph - data) + (u64)(tcph->doff * 4);
+    if (payload_off >= skb->len) {
+        bpf_printk("No TCP payload. Skipping\n");
+        goto reroute;
+    }
+
     if (bpf_skb_pull_data(skb, 0) < 0) {
         bpf_printk("Failed to pull payload bytes\n");
-        return BPF_LWT_REROUTE;
+        goto reroute;
     }
 
     u8 buf[MAX_PAYLOAD_SCAN];
@@ -199,7 +184,7 @@ int bpf_prog(struct __sk_buff *skb) {
     bpf_printk("Loading %d bytes of payload at offset %llu\n", want, payload_off);
     if (bpf_skb_load_bytes(skb, payload_off, buf, want) < 0) {
         bpf_printk("Failed to load payload bytes\n");
-        return BPF_LWT_REROUTE;
+        goto reroute;
     }
 
     // scan headers for Content-Type (single-pass, verifier-friendly)
@@ -229,6 +214,28 @@ int bpf_prog(struct __sk_buff *skb) {
         }
         ct[ct_off] = '\0';
         bpf_printk("Content-Type:%s\n", ct);
+    }
+
+reroute:
+    data = (void *)(u64)skb->data;
+    data_end = (void *)(u64)skb->data_end;
+    ip6h = (struct ipv6hdr *)(data + ip6h_off);
+    srh = (struct ipv6_sr_hdr *)(data + srh_off);
+
+    if (!(data <= (void *)ip6h && (void *)(ip6h + 1) <= data_end)) {
+        bpf_printk("IPv6 header out of bounds after skb pull\n");
+        return BPF_OK;
+    }
+    if (!(data <= (void *)srh && (void *)(srh + 1) <= data_end)) {
+        bpf_printk("SRH header out of bounds after skb pull\n");
+        return BPF_OK;
+    }
+
+    srh->segments_left--;
+    struct in6_addr *new_dst = srh->segments + srh->segments_left;
+    if (data <= (void *)new_dst && (void *)(new_dst + 1) <= data_end) {
+        ip6h->daddr = *new_dst;
+        bpf_printk("Updated dst: %pI6\n", (u64)&ip6h->daddr);
     }
 
     return BPF_LWT_REROUTE;
