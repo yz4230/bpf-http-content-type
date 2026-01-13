@@ -125,6 +125,7 @@ static int search_headers(void *data, void *data_end,
 SEC("lwt_xmit")
 int bpf_prog(struct __sk_buff *skb) {
     void *data, *data_end;
+    u32 segleft_adv = 1;
 
     bpf_printk("xmit triggered, skb len: %d\n", skb->len);
 
@@ -231,7 +232,7 @@ reroute:
         return BPF_OK;
     }
 
-    srh->segments_left--;
+    srh->segments_left = srh->segments_left > segleft_adv ? srh->segments_left - segleft_adv : 0;
     struct in6_addr *new_dst = srh->segments + srh->segments_left;
     if (data <= (void *)new_dst && (void *)(new_dst + 1) <= data_end) {
         ip6h->daddr = *new_dst;
