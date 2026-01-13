@@ -5,7 +5,7 @@
 #include <bpf/bpf_helpers.h>
 // clang-format on
 
-#define MAX_HDR_DEPTH 8
+#define MAX_HDR_DEPTH 4
 #define MAX_HTTP_HEADERS 8
 #define MAX_PAYLOAD_SCAN 128
 #define MAX_CT_LINE 48
@@ -75,13 +75,24 @@ static int search_headers(void *data, void *data_end,
                           struct ipv6hdr **ip6h, struct ipv6_sr_hdr **srh, struct tcphdr **tcph) {
     u8 *buf = (u8 *)data;
     u8 nexthdr = IPPROTO_IPV6;  // assume starting with IPv6
+    struct ipv6hdr *last_ip6h = NULL;
 
     for (u32 depth = 0; depth < MAX_HDR_DEPTH; depth++) {
         switch (nexthdr) {
+            case IPPROTO_IPIP: {  // IPv4-in-IPv6
+                struct iphdr *iph = (struct iphdr *)(buf);
+                if ((void *)(iph + 1) > data_end) return -1;
+                nexthdr = iph->protocol;
+                u32 ihl_bytes = (u32)(iph->ihl) * 4;
+                if ((void *)(buf + ihl_bytes) > data_end) return -1;
+                buf += ihl_bytes;
+                break;
+            }
             case IPPROTO_IPV6: {
-                *ip6h = (struct ipv6hdr *)(buf);
-                if ((void *)(*ip6h + 1) > data_end) return -1;
-                nexthdr = (*ip6h)->nexthdr;
+                last_ip6h = (struct ipv6hdr *)(buf);
+                if (!*ip6h) *ip6h = last_ip6h;
+                if ((void *)(last_ip6h + 1) > data_end) return -1;
+                nexthdr = last_ip6h->nexthdr;
                 buf += sizeof(struct ipv6hdr);
                 break;
             }
@@ -99,7 +110,6 @@ static int search_headers(void *data, void *data_end,
                 break;
             }
             case IPPROTO_TCP: {
-                if (!*ip6h) return -1;
                 *tcph = (struct tcphdr *)(buf);
                 if ((void *)(*tcph + 1) > data_end) return -1;
                 return 0;
@@ -117,7 +127,7 @@ int bpf_prog(struct __sk_buff *skb) {
     void *data = (void *)(u64)skb->data;
     void *data_end = (void *)(u64)skb->data_end;
 
-    bpf_printk("SBK len: %d\n", skb->len);
+    bpf_printk("SKB len: %d\n", skb->len);
 
     struct ipv6hdr *ip6h = NULL;
     struct ipv6_sr_hdr *srh = NULL;
@@ -127,11 +137,37 @@ int bpf_prog(struct __sk_buff *skb) {
         return BPF_OK;
     }
 
-    if (!(ip6h && (void *)(ip6h + 1) <= data_end &&
-          tcph && (void *)(tcph + 1) <= data_end)) {
+    if (!ip6h || !tcph) {
         bpf_printk("Invalid headers\n");
         return BPF_OK;
     }
+
+    if (!((void *)(ip6h + 1) <= data_end)) {
+        bpf_printk("IPv6 header out of bounds\n");
+        return BPF_OK;
+    }
+
+    if (!((void *)(tcph + 1) <= data_end)) {
+        bpf_printk("TCP header out of bounds\n");
+        return BPF_OK;
+    }
+
+    if (srh && (void *)(srh + 1) <= data_end) {
+        bpf_printk(
+            "Found SRH header\n"
+            "    segments_left: %d\n",
+            srh->segments_left);
+
+        srh->segments_left--;
+        bpf_printk("    decremented segments_left: %d\n", srh->segments_left);
+        struct in6_addr *new_dst = srh->segments + srh->segments_left;
+        if (data <= (void *)new_dst && (void *)(new_dst + 1) <= data_end) {
+            bpf_printk("    new dst: %pI6\n", (u64)new_dst);
+            ip6h->daddr = *new_dst;
+        }
+    }
+
+    ip6h->hop_limit = 42;
 
     bpf_printk(
         "Found IPv6 header\n"
@@ -144,19 +180,26 @@ int bpf_prog(struct __sk_buff *skb) {
         "    dst port: %d\n",
         bpf_ntohs(tcph->source), bpf_ntohs(tcph->dest));
 
-    u64 payload_off = ((u64 *)tcph - (u64 *)data) + (u64)(tcph->doff * 4);
+    // if ack, skip payload processing
+    if (tcph->ack) {
+        bpf_printk("TCP ACK packet, skipping payload processing\n");
+        return BPF_LWT_REROUTE;
+    }
+
+    u64 payload_off = (u64)((void *)tcph - data) + (u64)(tcph->doff * 4);
     if (bpf_skb_pull_data(skb, 0) < 0) {
         bpf_printk("Failed to pull payload bytes\n");
-        return BPF_OK;
+        return BPF_LWT_REROUTE;
     }
 
     u8 buf[MAX_PAYLOAD_SCAN];
     u32 want = skb->len - payload_off;
     if (want > sizeof(buf) - 1) want = sizeof(buf) - 1;
     if (want < 1) want = 1;
+    bpf_printk("Loading %d bytes of payload at offset %llu\n", want, payload_off);
     if (bpf_skb_load_bytes(skb, payload_off, buf, want) < 0) {
         bpf_printk("Failed to load payload bytes\n");
-        return BPF_OK;
+        return BPF_LWT_REROUTE;
     }
 
     // scan headers for Content-Type (single-pass, verifier-friendly)
@@ -188,7 +231,7 @@ int bpf_prog(struct __sk_buff *skb) {
         bpf_printk("Content-Type:%s\n", ct);
     }
 
-    return BPF_OK;
+    return BPF_LWT_REROUTE;
 }
 
 char _license[] SEC("license") = "GPL";
