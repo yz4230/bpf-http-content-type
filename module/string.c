@@ -100,10 +100,10 @@ static const struct btf_kfunc_id_set bpf_kfunc_example_set = {
 };
 
 /* Function executed when the module is loaded */
-static int __init hello_init(void) {
+static int __init strings_init(void) {
     int ret;
 
-    printk(KERN_INFO "Hello, world!\n");
+    printk(KERN_INFO "String utilities module loaded\n");
     /* Register the BTF kfunc ID set for BPF_PROG_TYPE_UNSPEC */
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_LWT_XMIT, &bpf_kfunc_example_set);
     if (ret) {
@@ -115,15 +115,15 @@ static int __init hello_init(void) {
 }
 
 /* Function executed when the module is removed */
-static void __exit hello_exit(void) {
+static void __exit strings_exit(void) {
     /* Unregister the BTF kfunc ID set */
     // unregister_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
-    printk(KERN_INFO "Goodbye, world!\n");
+    printk(KERN_INFO "String utilities module unloaded\n");
 }
 
 /* Macros to define the module’s init and exit points */
-module_init(hello_init);
-module_exit(hello_exit);
+module_init(strings_init);
+module_exit(strings_exit);
 
 MODULE_LICENSE("GPL");                   // License type (GPL)
 MODULE_AUTHOR("Yuzuki Ishiyama");        // Module author

@@ -1,4 +1,4 @@
-obj-m += hello.o
+obj-m += string.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
@@ -7,4 +7,3 @@ all:
 
 clean:
 	make -C $(KDIR) M=$(PWD) clean
-

@@ -22,7 +22,7 @@ Implementation lives in `src/parse.bpf.c`.
 
 - `src/parse.bpf.c`: LWT_XMIT BPF program (header discovery + HTTP header scan + SRH rewrite).
 - `src/vmlinux.h`: generated from `/sys/kernel/btf/vmlinux` (do not edit).
-- `module/hello.c`: kernel module registering string kfuncs (loaded as `hello.ko`).
+- `module/string.c`: kernel module registering string kfuncs (loaded as `string.ko`).
 - `scripts/tearup.sh`: creates namespaces + veths + SRv6 routes and attaches the BPF program.
 - `scripts/replace.sh`: remove/add/replace the BPF attachment on the ns3 End SID.
 - `scripts/teardown.sh`: deletes namespaces.

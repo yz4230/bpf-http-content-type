@@ -13,12 +13,12 @@ run = "make all"
 
 [tasks.rm-module]
 dir = "module"
-run = "sudo rmmod hello.ko"
+run = "sudo rmmod string.ko"
 
 [tasks.reload-module]
 depends = "build-module"
 dir = "module"
-run = ["sudo rmmod hello.ko || true", "sudo insmod hello.ko"]
+run = ["sudo rmmod string.ko || true", "sudo insmod string.ko"]
 
 [tasks.build-bpf]
 depends = ["gen-vmlinux"]
