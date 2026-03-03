@@ -128,7 +128,7 @@ static int search_headers(void *data, void *data_end,
 SEC("lwt_xmit")
 int bpf_prog(struct __sk_buff *skb) {
     void *data, *data_end;
-    u32 segleft_adv = 1;
+    u8 segleft_adv = 1;
 
     bpf_printk("xmit triggered, skb len: %d\n", skb->len);
 
