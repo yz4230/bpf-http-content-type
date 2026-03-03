@@ -40,8 +40,10 @@ run = "sudo ./scripts/teardown.sh"
 alias = "rp"
 description = "Replace the BPF program in ns3"
 run = [
-    "sudo ./scripts/replace.sh del",
-    { task = "build-bpf" },
-    { task = "reload-module" },
+    "sudo ./scripts/replace.sh del || true",
+    { tasks = [
+        "build-bpf",
+        "reload-module",
+    ] },
     "sudo ./scripts/replace.sh add",
 ]
