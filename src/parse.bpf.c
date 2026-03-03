@@ -13,8 +13,6 @@ extern int bpf_strnstr(const char *s1, const char *s2, size_t n) __ksym;
 #define MAX_HTTP_HEADERS 16
 #define CT_VAL_SIZE 64
 
-#define TOLOWER(c) ('A' <= (c) && (c) <= 'Z' ? (c) + ('a' - 'A') : (c))
-
 #define IPPROTO_ROUTING 43
 
 static int find_content_type(void *data, void *data_end, char *ct_val) {
@@ -42,7 +40,7 @@ static int find_content_type(void *data, void *data_end, char *ct_val) {
         bpf_for(buf_idx, 0, len & (CT_VAL_SIZE - 1)) {
             c = (char *)(data + ((start + buf_idx) & 0x7fff));
             if ((void *)(c + 1) > data_end) break;
-            buf[buf_idx] = TOLOWER(*c);
+            buf[buf_idx] = *c;
         }
         buf[(buf_idx + 1) & (CT_VAL_SIZE - 1)] = '\0';
 
