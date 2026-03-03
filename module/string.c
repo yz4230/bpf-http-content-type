@@ -11,8 +11,33 @@
 #define err(fmt, ...) \
     printk(KERN_ERR "bpf_string_kfunc: " fmt, ##__VA_ARGS__)
 
+static int __bpf_strncasecmp(const char *s1, const char *s2, bool ignore_case, size_t len) {
+    info("Called with s1=\"%s\", s2=\"%s\", ignore_case=%d, len=%zu", s1, s2, ignore_case, len);
+
+    char c1, c2;
+    int i;
+
+    for (i = 0; i < len && i < XATTR_SIZE_MAX; i++) {
+        c1 = *s1;
+        c2 = *s2;
+        if (ignore_case) {
+            c1 = tolower(c1);
+            c2 = tolower(c2);
+        }
+        if (c1 != c2) {
+            return c1 < c2 ? -1 : 1;
+        }
+        if (c1 == '\0')
+            return 0;
+        s1++;
+        s2++;
+    }
+    return i == XATTR_SIZE_MAX ? -E2BIG : 0;
+}
+
 /* Declare the kfunc prototype */
 __bpf_kfunc int bpf_strcmp(const char *s1, const char *s2);
+__bpf_kfunc int bpf_strncasecmp(const char *s1, const char *s2, size_t n);
 __bpf_kfunc int bpf_strnstr(const char *s1, const char *s2, size_t n);
 
 /* Begin kfunc definitions */
@@ -20,14 +45,11 @@ __bpf_kfunc_start_defs();
 
 /* Define the bpf_strstr kfunc */
 __bpf_kfunc int bpf_strcmp(const char *s1, const char *s2) {
-    while (*s1 && *s2) {
-        if (*s1 != *s2) {
-            return (unsigned char)*s1 - (unsigned char)*s2;
-        }
-        s1++;
-        s2++;
-    }
-    return (unsigned char)*s1 - (unsigned char)*s2;
+    return __bpf_strncasecmp(s1, s2, false, XATTR_SIZE_MAX);
+}
+
+__bpf_kfunc int bpf_strncasecmp(const char *s1, const char *s2, size_t n) {
+    return __bpf_strncasecmp(s1, s2, true, n);
 }
 
 __bpf_kfunc int bpf_strnstr(const char *s1, const char *s2, size_t n) {
@@ -48,6 +70,7 @@ __bpf_kfunc_end_defs();
 /* Define the BTF kfuncs ID set */
 BTF_KFUNCS_START(bpf_string_kfunc_ids_set)
 BTF_ID_FLAGS(func, bpf_strcmp)
+BTF_ID_FLAGS(func, bpf_strncasecmp)
 BTF_ID_FLAGS(func, bpf_strnstr)
 BTF_KFUNCS_END(bpf_string_kfunc_ids_set)
 
