@@ -118,7 +118,7 @@ static int search_headers(void *data, void *data_end,
                 return 0;
             }
             default:  // unsupported protocol
-                return 0;
+                return -1;
         }
     }
 
