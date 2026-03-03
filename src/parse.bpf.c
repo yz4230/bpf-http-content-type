@@ -6,72 +6,55 @@
 // clang-format on
 
 extern int bpf_strcmp(const char *s1, const char *s2) __ksym;
-extern int bpf_strstr(const char *s1, const char *s2) __ksym;
+extern int bpf_strncasecmp(const char *s1, const char *s2, size_t n) __ksym;
+extern int bpf_strnstr(const char *s1, const char *s2, size_t n) __ksym;
 
 #define MAX_HDR_DEPTH 8
-#define MAX_HTTP_HEADERS 8
-#define MAX_PAYLOAD_SCAN 128
-#define MAX_CT_LINE 48
+#define MAX_HTTP_HEADERS 16
+#define CT_VAL_SIZE 64
 
-#define TOLOWER(c) ((c) >= 'A' && (c) <= 'Z' ? (c) + 32 : (c))
+#define TOLOWER(c) ('A' <= (c) && (c) <= 'Z' ? (c) + ('a' - 'A') : (c))
 
 #define IPPROTO_ROUTING 43
 
-// "content-type:" pre-lowercased
-static const char ct_lower[] = "content-type: ";
+static int find_content_type(void *data, void *data_end, char *ct_val) {
+    // first line: "HTTP/1.1 200 OK\r\n"
+    // subsequent lines: "Header-Name: value\r\n"
+    // end of headers: "\r\n"
+    const char LINE_BREAK[] = "\r\n";
+    const char CT_HEADER[] = "content-type: ";
+    const char CT_OFFSET = sizeof(CT_HEADER) - 1;
 
-struct ct_scan_ctx {
-    const u8 *buf;
-    u32 want;
-    int at_line_start;
-    int match_idx;
-    int found;
-    int stop;
-    u32 pos_after_match;
-};
+    u32 start = 0, end = 0, len;
+    u16 tot_len = data_end - data;
+    char buf[CT_VAL_SIZE], *c;
+    u8 buf_idx = 0;
 
-static long ct_scan_cb(u32 idx, void *ctx_ptr) {
-    struct ct_scan_ctx *ctx = (struct ct_scan_ctx *)ctx_ptr;
-    const int ct_match_len = sizeof(ct_lower) - 1;
+    bpf_repeat(MAX_HTTP_HEADERS) {
+        if (start >= tot_len) break;
+        end = bpf_strnstr((char *)data + start, LINE_BREAK, tot_len - start);
+        if (end <= 0) break;  // end == 0 is for end of headers ("\r\n\r\n")
+        end = (end + start) & 0x7fff;
 
-    if (ctx->stop || ctx->found) return 1;
-    // bpf_loop's index isn't range-tracked by the verifier, so we must
-    // explicitly bound it before doing a variable-offset stack read.
-    u32 pos = idx & (MAX_PAYLOAD_SCAN - 1);
-    if (pos >= ctx->want) return 1;
+        len = end - start;
+        if (len == 0) break;  // empty line indicates end of headers
 
-    u8 c = ctx->buf[pos];
-
-    // End of HTTP headers (empty line)
-    if (ctx->at_line_start && (c == '\r' || c == '\n')) {
-        ctx->stop = 1;
-        return 1;
-    }
-
-    if (ctx->at_line_start) {
-        u8 lc = TOLOWER(c);
-        ctx->match_idx = (lc == ct_lower[0]) ? 1 : 0;
-        ctx->at_line_start = 0;
-    } else if (ctx->match_idx > 0 && ctx->match_idx < ct_match_len) {
-        u8 lc = TOLOWER(c);
-        if (lc == ct_lower[ctx->match_idx]) {
-            ctx->match_idx++;
-            if (ctx->match_idx == ct_match_len) {
-                ctx->found = 1;
-                ctx->pos_after_match = pos + 1;
-                return 1;
-            }
-        } else {
-            ctx->match_idx = 0;
+        bpf_for(buf_idx, 0, len & (CT_VAL_SIZE - 1)) {
+            c = (char *)(data + ((start + buf_idx) & 0x7fff));
+            if ((void *)(c + 1) > data_end) break;
+            buf[buf_idx] = TOLOWER(*c);
         }
+        buf[(buf_idx + 1) & (CT_VAL_SIZE - 1)] = '\0';
+
+        if (bpf_strncasecmp(buf, CT_HEADER, CT_OFFSET) == 0) {
+            __builtin_memcpy(ct_val, buf + CT_OFFSET, CT_VAL_SIZE);
+            return 0;
+        }
+
+        start = (end + sizeof(LINE_BREAK) - 1) & 0x7fff;
     }
 
-    if (c == '\n') {
-        ctx->at_line_start = 1;
-        ctx->match_idx = 0;
-    }
-
-    return 0;
+    return -1;
 }
 
 static int search_headers(void *data, void *data_end,
@@ -82,7 +65,6 @@ static int search_headers(void *data, void *data_end,
 
     bpf_repeat(MAX_HDR_DEPTH) {
         offset &= 0xff;
-        barrier_var(offset);
 
         switch (nexthdr) {
             case IPPROTO_IPIP: {  // IPv4-in-IPv6
@@ -136,20 +118,20 @@ int bpf_prog(struct __sk_buff *skb) {
 
     u16 ip6h_off = 0, srh_off = 0, tcph_off = 0;
     if (search_headers(data, data_end, &ip6h_off, &srh_off, &tcph_off) < 0) {
-        bpf_printk("Failed to find TCP header\n");
+        bpf_printk("Failed to find TCP header");
         return BPF_OK;
     }
 
     struct ipv6hdr *ip6h = (struct ipv6hdr *)(data + ip6h_off);
     struct ipv6_sr_hdr *srh = (struct ipv6_sr_hdr *)(data + srh_off);
     if ((void *)(ip6h + 1) > data_end || (void *)(srh + 1) > data_end) {
-        bpf_printk("IPv6 or SRH header out of bounds\n");
+        bpf_printk("IPv6 or SRH header out of bounds");
         return BPF_OK;
     }
 
     struct tcphdr *tcph = (struct tcphdr *)(data + tcph_off);
     if ((void *)(tcph + 1) > data_end) {
-        bpf_printk("TCP header out of bounds\n");
+        bpf_printk("TCP header out of bounds");
         goto reroute;
     }
 
@@ -161,70 +143,34 @@ int bpf_prog(struct __sk_buff *skb) {
         "    segments_left: %d\n"
         "Found TCP header\n"
         "    src port: %d\n"
-        "    dst port: %d\n",
+        "    dst port: %d",
         (u64)&ip6h->saddr, (u64)&ip6h->daddr,
         srh->segments_left,
         bpf_ntohs(tcph->source), bpf_ntohs(tcph->dest));
 
     ip6h->hop_limit = 42;  // for easy identification of processed packets
 
-    u64 payload_off = (u64)((void *)tcph - data) + (u64)(tcph->doff * 4);
+    u16 payload_off;
+    payload_off = (u16)((void *)tcph - data) + (u16)(tcph->doff * 4);
+    payload_off &= 0x7fff;
     if (payload_off >= skb->len) {
-        bpf_printk("No TCP payload. Skipping\n");
+        bpf_printk("No TCP payload. Skipping");
         goto reroute;
     }
 
-    if (bpf_skb_pull_data(skb, 0) < 0) {
-        bpf_printk("Failed to pull payload bytes\n");
+    if (bpf_skb_pull_data(skb, skb->len) < 0) {
+        bpf_printk("Failed to pull payload bytes");
         goto reroute;
     }
 
-    u8 buf[MAX_PAYLOAD_SCAN];
-    u32 want = skb->len - payload_off;
-    if (want > sizeof(buf) - 1) want = sizeof(buf) - 1;
-    if (want < 1) want = 1;
-    bpf_printk("Loading %d bytes of payload at offset %llu\n", want, payload_off);
-    if (bpf_skb_load_bytes(skb, payload_off, buf, want) < 0) {
-        bpf_printk("Failed to load payload bytes\n");
-        goto reroute;
-    }
+    data = (void *)(u64)skb->data;
+    data_end = (void *)(u64)skb->data_end;
+    char content_type[CT_VAL_SIZE] = {0};
 
-    // scan headers for Content-Type (single-pass, verifier-friendly)
-    struct ct_scan_ctx scan_ctx = {
-        .buf = buf,
-        .want = want,
-        .at_line_start = 1,
-        .match_idx = 0,
-        .found = 0,
-        .stop = 0,
-        .pos_after_match = 0,
-    };
-    bpf_loop(MAX_PAYLOAD_SCAN, ct_scan_cb, &scan_ctx, 0);
-
-    // print content type line if found
-    u8 ct[MAX_CT_LINE];
-    u32 ct_off = 0;
-    if (scan_ctx.found) {
-        u32 pos = scan_ctx.pos_after_match;
-        // extract value until end of line
-        for (u32 i = 0; i < MAX_CT_LINE - 1; i++) {
-            u32 idx = pos + i;
-            if (idx >= want) break;
-            u8 c = buf[idx];
-            if (c == '\r' || c == '\n') break;
-            ct[ct_off++] = c;
-        }
-        ct_off &= (MAX_CT_LINE - 1);
-        ct[ct_off] = '\0';
-        bpf_printk("Content-Type:%s\n", ct);
-    }
-
-    const char mp4[] = "video/mp4";
-    if (bpf_strcmp((const char *)ct, mp4) == 0) {
-        segleft_adv++;  // advance one extra segment for MP4
-        bpf_printk("MP4 Content-Type detected, performing SRH reroute\n");
+    if (find_content_type(data + payload_off, data_end, content_type) < 0) {
+        bpf_printk("content type header not found");
     } else {
-        bpf_printk("Non-MP4 or no Content-Type detected, skipping SRH reroute\n");
+        bpf_printk("Extracted content type: %s", content_type);
     }
 
 reroute:
@@ -233,12 +179,12 @@ reroute:
     ip6h = (struct ipv6hdr *)(data + ip6h_off);
     srh = (struct ipv6_sr_hdr *)(data + srh_off);
 
-    if (!(data <= (void *)ip6h && (void *)(ip6h + 1) <= data_end)) {
-        bpf_printk("IPv6 header out of bounds after skb pull\n");
+    if ((void *)(ip6h + 1) > data_end) {
+        bpf_printk("IPv6 header out of bounds after skb pull");
         return BPF_OK;
     }
-    if (!(data <= (void *)srh && (void *)(srh + 1) <= data_end)) {
-        bpf_printk("SRH header out of bounds after skb pull\n");
+    if ((void *)(srh + 1) > data_end) {
+        bpf_printk("SRH header out of bounds after skb pull");
         return BPF_OK;
     }
 
