@@ -5,6 +5,12 @@
 #include <linux/kernel.h>  // Kernel logging macros
 #include <linux/module.h>  // Core header for loading modules
 
+#define info(fmt, ...) \
+    printk(KERN_INFO "bpf_string_kfunc: " fmt, ##__VA_ARGS__)
+
+#define err(fmt, ...) \
+    printk(KERN_ERR "bpf_string_kfunc: " fmt, ##__VA_ARGS__)
+
 /* Declare the kfunc prototype */
 __bpf_kfunc int bpf_strcmp(const char *s1, const char *s2);
 __bpf_kfunc int bpf_strstr(const char *s1, const char *s2);
@@ -55,20 +61,20 @@ static const struct btf_kfunc_id_set bpf_string_kfunc_set = {
 static int __init strings_init(void) {
     int ret;
 
-    pr_info("String utilities module loaded\n");
+    info("String utilities module loaded\n");
     /* Register the BTF kfunc ID set for BPF_PROG_TYPE_UNSPEC */
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_UNSPEC, &bpf_string_kfunc_set);
     if (ret) {
-        pr_err("bpf_string_kfunc: Failed to register BTF kfunc ID set\n");
+        err("bpf_string_kfunc: Failed to register BTF kfunc ID set\n");
         return ret;
     }
-    pr_info("bpf_string_kfunc: Module loaded successfully\n");
+    info("bpf_string_kfunc: Module loaded successfully\n");
     return 0;  // Return 0 if successful
 }
 
 /* Function executed when the module is removed */
 static void __exit strings_exit(void) {
-    pr_info("String utilities module unloaded\n");
+    info("String utilities module unloaded\n");
 }
 
 /* Macros to define the module’s init and exit points */
