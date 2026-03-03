@@ -13,7 +13,7 @@
 
 /* Declare the kfunc prototype */
 __bpf_kfunc int bpf_strcmp(const char *s1, const char *s2);
-__bpf_kfunc int bpf_strstr(const char *s1, const char *s2);
+__bpf_kfunc int bpf_strnstr(const char *s1, const char *s2, size_t n);
 
 /* Begin kfunc definitions */
 __bpf_kfunc_start_defs();
@@ -30,10 +30,10 @@ __bpf_kfunc int bpf_strcmp(const char *s1, const char *s2) {
     return (unsigned char)*s1 - (unsigned char)*s2;
 }
 
-__bpf_kfunc int bpf_strstr(const char *s1, const char *s2) {
-    // Return index of first character of first occurrence of s2 within s1, or -1 if not found
+__bpf_kfunc int bpf_strnstr(const char *s1, const char *s2, size_t n) {
+    // Similar to bpf_strstr but only searches the first n characters of s1
     int i, j;
-    for (i = 0; i < XATTR_SIZE_MAX; i++) {
+    for (i = 0; i < n; i++) {
         for (j = 0; j < XATTR_SIZE_MAX; j++) {
             if (s2[j] == '\0') return i;
             if (s1[i + j] != s2[j]) break;
@@ -48,7 +48,7 @@ __bpf_kfunc_end_defs();
 /* Define the BTF kfuncs ID set */
 BTF_KFUNCS_START(bpf_string_kfunc_ids_set)
 BTF_ID_FLAGS(func, bpf_strcmp)
-BTF_ID_FLAGS(func, bpf_strstr)
+BTF_ID_FLAGS(func, bpf_strnstr)
 BTF_KFUNCS_END(bpf_string_kfunc_ids_set)
 
 /* Register the kfunc ID set */

@@ -7,71 +7,50 @@
 
 extern int bpf_strcmp(const char *s1, const char *s2) __ksym;
 extern int bpf_strstr(const char *s1, const char *s2) __ksym;
+extern int bpf_strnstr(const char *s1, const char *s2, size_t n) __ksym;
 
 #define MAX_HDR_DEPTH 8
 #define MAX_HTTP_HEADERS 8
-#define MAX_PAYLOAD_SCAN 128
-#define MAX_CT_LINE 48
 
 #define TOLOWER(c) ((c) >= 'A' && (c) <= 'Z' ? (c) + 32 : (c))
 
 #define IPPROTO_ROUTING 43
 
-// "content-type:" pre-lowercased
-static const char ct_lower[] = "content-type: ";
+static int find_content_type(void *data, void *data_end, char *dst) {
+    // first line: "HTTP/1.1 200 OK\r\n"
+    // subsequent lines: "Header-Name: value\r\n"
+    // end of headers: "\r\n"
+    const char LINE_BREAK[] = "\\r\\n";
+    const char CT_HEADER[] = "Content-Type:";
 
-struct ct_scan_ctx {
-    const u8 *buf;
-    u32 want;
-    int at_line_start;
-    int match_idx;
-    int found;
-    int stop;
-    u32 pos_after_match;
-};
+    u32 i, start = 0, end = 0;
+    u16 tot_len = data_end - data;
+    char buf[64] = {0};
 
-static long ct_scan_cb(u32 idx, void *ctx_ptr) {
-    struct ct_scan_ctx *ctx = (struct ct_scan_ctx *)ctx_ptr;
-    const int ct_match_len = sizeof(ct_lower) - 1;
+    bpf_repeat(MAX_HTTP_HEADERS) {
+        barrier_var(start);
+        barrier_var(end);
 
-    if (ctx->stop || ctx->found) return 1;
-    // bpf_loop's index isn't range-tracked by the verifier, so we must
-    // explicitly bound it before doing a variable-offset stack read.
-    u32 pos = idx & (MAX_PAYLOAD_SCAN - 1);
-    if (pos >= ctx->want) return 1;
+        if (start >= tot_len) break;
+        bpf_printk("find_content_type: start=%d\n", start);
 
-    u8 c = ctx->buf[pos];
+        end = bpf_strnstr((char *)data + start, LINE_BREAK, tot_len - start);
+        if (end <= 0) break;  // end == 0 is for end of headers ("\r\n\r\n")
+        end += start;
+        end &= 0x7fff;
+        bpf_printk("find_content_type: end=%d", end);
 
-    // End of HTTP headers (empty line)
-    if (ctx->at_line_start && (c == '\r' || c == '\n')) {
-        ctx->stop = 1;
-        return 1;
-    }
-
-    if (ctx->at_line_start) {
-        u8 lc = TOLOWER(c);
-        ctx->match_idx = (lc == ct_lower[0]) ? 1 : 0;
-        ctx->at_line_start = 0;
-    } else if (ctx->match_idx > 0 && ctx->match_idx < ct_match_len) {
-        u8 lc = TOLOWER(c);
-        if (lc == ct_lower[ctx->match_idx]) {
-            ctx->match_idx++;
-            if (ctx->match_idx == ct_match_len) {
-                ctx->found = 1;
-                ctx->pos_after_match = pos + 1;
-                return 1;
-            }
-        } else {
-            ctx->match_idx = 0;
+        bpf_for(i, start, end) {
+            char *c = (char *)(data + i);
+            if ((void *)(c + 1) > data_end) break;
+            bpf_printk("find_content_type: char=%c", *c);
         }
+
+        start = end + sizeof(LINE_BREAK) - 1;
+        start &= 0x7fff;
     }
 
-    if (c == '\n') {
-        ctx->at_line_start = 1;
-        ctx->match_idx = 0;
-    }
-
-    return 0;
+    return -1;
 }
 
 static int search_headers(void *data, void *data_end,
@@ -168,63 +147,27 @@ int bpf_prog(struct __sk_buff *skb) {
 
     ip6h->hop_limit = 42;  // for easy identification of processed packets
 
-    u64 payload_off = (u64)((void *)tcph - data) + (u64)(tcph->doff * 4);
+    u16 payload_off;
+    payload_off = (u16)((void *)tcph - data) + (u16)(tcph->doff * 4);
+    payload_off &= 0x7fff;
     if (payload_off >= skb->len) {
         bpf_printk("No TCP payload. Skipping\n");
         goto reroute;
     }
 
-    if (bpf_skb_pull_data(skb, 0) < 0) {
+    if (bpf_skb_pull_data(skb, skb->len) < 0) {
         bpf_printk("Failed to pull payload bytes\n");
         goto reroute;
     }
 
-    u8 buf[MAX_PAYLOAD_SCAN];
-    u32 want = skb->len - payload_off;
-    if (want > sizeof(buf) - 1) want = sizeof(buf) - 1;
-    if (want < 1) want = 1;
-    bpf_printk("Loading %d bytes of payload at offset %llu\n", want, payload_off);
-    if (bpf_skb_load_bytes(skb, payload_off, buf, want) < 0) {
-        bpf_printk("Failed to load payload bytes\n");
-        goto reroute;
-    }
+    data = (void *)(u64)skb->data;
+    data_end = (void *)(u64)skb->data_end;
+    char content_type[64] = {0};
 
-    // scan headers for Content-Type (single-pass, verifier-friendly)
-    struct ct_scan_ctx scan_ctx = {
-        .buf = buf,
-        .want = want,
-        .at_line_start = 1,
-        .match_idx = 0,
-        .found = 0,
-        .stop = 0,
-        .pos_after_match = 0,
-    };
-    bpf_loop(MAX_PAYLOAD_SCAN, ct_scan_cb, &scan_ctx, 0);
-
-    // print content type line if found
-    u8 ct[MAX_CT_LINE];
-    u32 ct_off = 0;
-    if (scan_ctx.found) {
-        u32 pos = scan_ctx.pos_after_match;
-        // extract value until end of line
-        for (u32 i = 0; i < MAX_CT_LINE - 1; i++) {
-            u32 idx = pos + i;
-            if (idx >= want) break;
-            u8 c = buf[idx];
-            if (c == '\r' || c == '\n') break;
-            ct[ct_off++] = c;
-        }
-        ct_off &= (MAX_CT_LINE - 1);
-        ct[ct_off] = '\0';
-        bpf_printk("Content-Type:%s\n", ct);
-    }
-
-    const char mp4[] = "video/mp4";
-    if (bpf_strcmp((const char *)ct, mp4) == 0) {
-        segleft_adv++;  // advance one extra segment for MP4
-        bpf_printk("MP4 Content-Type detected, performing SRH reroute\n");
+    if (find_content_type(data + payload_off, data_end, content_type) < 0) {
+        bpf_printk("Content-Type header not found\n");
     } else {
-        bpf_printk("Non-MP4 or no Content-Type detected, skipping SRH reroute\n");
+        bpf_printk("Extracted Content-Type: %s\n", content_type);
     }
 
 reroute:
