@@ -9,7 +9,7 @@ extern int bpf_strcmp(const char *s1, const char *s2) __ksym;
 extern int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz) __ksym;
 extern int bpf_strcasestr(const char *s1, u32 len1, const char *s2, u32 len2) __ksym;
 
-#define MAX_HDR_DEPTH 4
+#define MAX_HDR_DEPTH 8
 #define MAX_HTTP_HEADERS 8
 #define MAX_PAYLOAD_SCAN 128
 #define MAX_CT_LINE 48
@@ -81,14 +81,16 @@ static int search_headers(void *data, void *data_end,
     u8 nexthdr = IPPROTO_IPV6;  // assume starting with IPv6
     u64 offset = 0;
 
-    for (u32 depth = 0; depth < MAX_HDR_DEPTH; depth++) {
+    bpf_repeat(MAX_HDR_DEPTH) {
+        offset &= 0xff;
+        barrier_var(offset);
+
         switch (nexthdr) {
             case IPPROTO_IPIP: {  // IPv4-in-IPv6
                 struct iphdr *iph = (struct iphdr *)(buf + offset);
                 if ((void *)(iph + 1) > data_end) return -1;
                 nexthdr = iph->protocol;
                 u32 ihl_bytes = (u32)(iph->ihl) * 4;
-                if ((void *)(buf + offset + ihl_bytes) > data_end) return -1;
                 offset += ihl_bytes;
                 break;
             }
@@ -141,15 +143,13 @@ int bpf_prog(struct __sk_buff *skb) {
 
     struct ipv6hdr *ip6h = (struct ipv6hdr *)(data + ip6h_off);
     struct ipv6_sr_hdr *srh = (struct ipv6_sr_hdr *)(data + srh_off);
-
-    if (!(data <= (void *)ip6h && (void *)(ip6h + 1) <= data_end &&
-          data <= (void *)srh && (void *)(srh + 1) <= data_end)) {
+    if ((void *)(ip6h + 1) > data_end || (void *)(srh + 1) > data_end) {
         bpf_printk("IPv6 or SRH header out of bounds\n");
         return BPF_OK;
     }
 
     struct tcphdr *tcph = (struct tcphdr *)(data + tcph_off);
-    if (!(data <= (void *)tcph && (void *)(tcph + 1) <= data_end)) {
+    if ((void *)(tcph + 1) > data_end) {
         bpf_printk("TCP header out of bounds\n");
         goto reroute;
     }
