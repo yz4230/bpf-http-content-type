@@ -156,9 +156,9 @@ int bpf_prog(struct __sk_buff *skb) {
     bpf_printk(
         "Found IPv6 header\n"
         "    src: %pI6\n"
-        "    dst: %pI6\n",
+        "    dst: %pI6\n"
         "Found SRH header\n"
-        "    segments_left: %d\n",
+        "    segments_left: %d\n"
         "Found TCP header\n"
         "    src port: %d\n"
         "    dst port: %d\n",
