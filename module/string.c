@@ -12,8 +12,6 @@
     printk(KERN_ERR "bpf_string_kfunc: " fmt, ##__VA_ARGS__)
 
 static int __bpf_strncasecmp(const char *s1, const char *s2, bool ignore_case, size_t len) {
-    info("Called with s1=\"%s\", s2=\"%s\", ignore_case=%d, len=%zu", s1, s2, ignore_case, len);
-
     char c1, c2;
     int i;
 
