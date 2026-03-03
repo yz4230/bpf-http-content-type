@@ -7,8 +7,7 @@
 
 /* Declare the kfunc prototype */
 __bpf_kfunc int bpf_strcmp(const char *s1, const char *s2);
-__bpf_kfunc int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz);
-__bpf_kfunc int bpf_strcasestr(const char *s1, u32 len1, const char *s2, u32 len2);
+__bpf_kfunc int bpf_strstr(const char *s1, const char *s2);
 
 /* Begin kfunc definitions */
 __bpf_kfunc_start_defs();
@@ -25,62 +24,16 @@ __bpf_kfunc int bpf_strcmp(const char *s1, const char *s2) {
     return (unsigned char)*s1 - (unsigned char)*s2;
 }
 
-__bpf_kfunc int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz) {
-    // Edge case: if substr is empty, return 0 (assuming empty string is found at the start)
-    if (substr__sz == 0) {
-        return 0;
-    }
-    // Edge case: if the substring is longer than the main string, it's impossible to find
-    if (substr__sz > str__sz) {
-        return -1;  // Return -1 to indicate not found
-    }
-    // Iterate through the main string, considering the size limit
-    for (size_t i = 0; i <= str__sz - substr__sz; i++) {
-        size_t j = 0;
-        // Compare the substring with the current position in the string
-        while (j < substr__sz && str[i + j] == substr[j]) {
-            j++;
-        }
-        // If the entire substring was found
-        if (j == substr__sz) {
-            return i;  // Return the index of the first match
+__bpf_kfunc int bpf_strstr(const char *s1, const char *s2) {
+    // Return index of first character of first occurrence of s2 within s1, or -1 if not found
+    int i, j;
+    for (i = 0; i < XATTR_SIZE_MAX; i++) {
+        for (j = 0; j < XATTR_SIZE_MAX; j++) {
+            if (s2[j] == '\0') return i;
+            if (s1[i + j] != s2[j]) break;
         }
     }
-    // Return -1 if the substring is not found
-    return -1;
-}
-
-__bpf_kfunc int bpf_strcasestr(const char *s1, u32 len1, const char *s2, u32 len2) {
-    // Edge case: if s2 is empty, return 0 (assuming empty string is found at the start)
-    if (len2 == 0) {
-        return 0;
-    }
-    // Edge case: if s2 is longer than s1, it's impossible to find
-    if (len2 > len1) {
-        return -1;  // Return -1 to indicate not found
-    }
-    // Iterate through the main string, considering the size limit
-    for (size_t i = 0; i <= len1 - len2; i++) {
-        size_t j = 0;
-        // Compare the substring with the current position in the string (case-insensitive)
-        while (j < len2) {
-            char c1 = s1[i + j];
-            char c2 = s2[j];
-            // // Convert both characters to lowercase for comparison
-            c1 = tolower(c1);
-            c2 = tolower(c2);
-            if (c1 != c2) {
-                break;
-            }
-            j++;
-        }
-        // If the entire substring was found
-        if (j == len2) {
-            return i;  // Return the index of the first match
-        }
-    }
-    // Return -1 if the substring is not found
-    return -1;
+    return -1;  // No match found
 }
 
 /* End kfunc definitions */
@@ -90,7 +43,6 @@ __bpf_kfunc_end_defs();
 BTF_KFUNCS_START(bpf_string_kfunc_ids_set)
 BTF_ID_FLAGS(func, bpf_strcmp)
 BTF_ID_FLAGS(func, bpf_strstr)
-BTF_ID_FLAGS(func, bpf_strcasestr)
 BTF_KFUNCS_END(bpf_string_kfunc_ids_set)
 
 /* Register the kfunc ID set */

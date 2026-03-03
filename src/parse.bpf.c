@@ -6,8 +6,7 @@
 // clang-format on
 
 extern int bpf_strcmp(const char *s1, const char *s2) __ksym;
-extern int bpf_strstr(const char *str, u32 str__sz, const char *substr, u32 substr__sz) __ksym;
-extern int bpf_strcasestr(const char *s1, u32 len1, const char *s2, u32 len2) __ksym;
+extern int bpf_strstr(const char *s1, const char *s2) __ksym;
 
 #define MAX_HDR_DEPTH 8
 #define MAX_HTTP_HEADERS 8
