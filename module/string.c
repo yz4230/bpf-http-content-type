@@ -87,38 +87,36 @@ __bpf_kfunc int bpf_strcasestr(const char *s1, u32 len1, const char *s2, u32 len
 __bpf_kfunc_end_defs();
 
 /* Define the BTF kfuncs ID set */
-BTF_KFUNCS_START(bpf_kfunc_example_ids_set)
+BTF_KFUNCS_START(bpf_string_kfunc_ids_set)
 BTF_ID_FLAGS(func, bpf_strcmp)
 BTF_ID_FLAGS(func, bpf_strstr)
 BTF_ID_FLAGS(func, bpf_strcasestr)
-BTF_KFUNCS_END(bpf_kfunc_example_ids_set)
+BTF_KFUNCS_END(bpf_string_kfunc_ids_set)
 
 /* Register the kfunc ID set */
-static const struct btf_kfunc_id_set bpf_kfunc_example_set = {
+static const struct btf_kfunc_id_set bpf_string_kfunc_set = {
     .owner = THIS_MODULE,
-    .set = &bpf_kfunc_example_ids_set,
+    .set = &bpf_string_kfunc_ids_set,
 };
 
 /* Function executed when the module is loaded */
 static int __init strings_init(void) {
     int ret;
 
-    printk(KERN_INFO "String utilities module loaded\n");
+    pr_info("String utilities module loaded\n");
     /* Register the BTF kfunc ID set for BPF_PROG_TYPE_UNSPEC */
-    ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_LWT_XMIT, &bpf_kfunc_example_set);
+    ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_UNSPEC, &bpf_string_kfunc_set);
     if (ret) {
-        pr_err("bpf_kfunc_example: Failed to register BTF kfunc ID set\n");
+        pr_err("bpf_string_kfunc: Failed to register BTF kfunc ID set\n");
         return ret;
     }
-    printk(KERN_INFO "bpf_kfunc_example: Module loaded successfully\n");
+    pr_info("bpf_string_kfunc: Module loaded successfully\n");
     return 0;  // Return 0 if successful
 }
 
 /* Function executed when the module is removed */
 static void __exit strings_exit(void) {
-    /* Unregister the BTF kfunc ID set */
-    // unregister_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_kfunc_example_set);
-    printk(KERN_INFO "String utilities module unloaded\n");
+    pr_info("String utilities module unloaded\n");
 }
 
 /* Macros to define the module’s init and exit points */
