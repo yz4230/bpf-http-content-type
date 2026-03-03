@@ -76,10 +76,10 @@ static long ct_scan_cb(u32 idx, void *ctx_ptr) {
 }
 
 static int search_headers(void *data, void *data_end,
-                          u32 *ip6h_off, u32 *srh_off, u32 *tcph_off) {
+                          u16 *ip6h_off, u16 *srh_off, u16 *tcph_off) {
     u8 *buf = (u8 *)data;
     u8 nexthdr = IPPROTO_IPV6;  // assume starting with IPv6
-    u64 offset = 0;
+    u16 offset = 0;
 
     bpf_repeat(MAX_HDR_DEPTH) {
         offset &= 0xff;
@@ -135,7 +135,7 @@ int bpf_prog(struct __sk_buff *skb) {
     data = (void *)(u64)skb->data;
     data_end = (void *)(u64)skb->data_end;
 
-    u32 ip6h_off = 0, srh_off = 0, tcph_off = 0;
+    u16 ip6h_off = 0, srh_off = 0, tcph_off = 0;
     if (search_headers(data, data_end, &ip6h_off, &srh_off, &tcph_off) < 0) {
         bpf_printk("Failed to find TCP header\n");
         return BPF_OK;
