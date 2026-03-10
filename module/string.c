@@ -11,7 +11,7 @@
 #define err(fmt, ...) \
     printk(KERN_ERR "bpf_string_kfunc: " fmt, ##__VA_ARGS__)
 
-static int __bpf_strncasecmp(const char *s1, const char *s2, bool ignore_case, size_t len) {
+static int __bpf_strncasecmp(const char* s1, const char* s2, bool ignore_case, size_t len) {
     char c1, c2;
     int i;
 
@@ -34,23 +34,23 @@ static int __bpf_strncasecmp(const char *s1, const char *s2, bool ignore_case, s
 }
 
 /* Declare the kfunc prototype */
-__bpf_kfunc int bpf_strcmp(const char *s1, const char *s2);
-__bpf_kfunc int bpf_strncasecmp(const char *s1, const char *s2, size_t n);
-__bpf_kfunc int bpf_strnstr(const char *s1, const char *s2, size_t n);
+__bpf_kfunc int bpf_strcmp(const char* s1, const char* s2);
+__bpf_kfunc int bpf_strncasecmp(const char* s1, const char* s2, size_t n);
+__bpf_kfunc int bpf_strnstr(const char* s1, const char* s2, size_t n);
 
 /* Begin kfunc definitions */
 __bpf_kfunc_start_defs();
 
 /* Define the bpf_strstr kfunc */
-__bpf_kfunc int bpf_strcmp(const char *s1, const char *s2) {
+__bpf_kfunc int bpf_strcmp(const char* s1, const char* s2) {
     return __bpf_strncasecmp(s1, s2, false, XATTR_SIZE_MAX);
 }
 
-__bpf_kfunc int bpf_strncasecmp(const char *s1, const char *s2, size_t n) {
+__bpf_kfunc int bpf_strncasecmp(const char* s1, const char* s2, size_t n) {
     return __bpf_strncasecmp(s1, s2, true, n);
 }
 
-__bpf_kfunc int bpf_strnstr(const char *s1, const char *s2, size_t n) {
+__bpf_kfunc int bpf_strnstr(const char* s1, const char* s2, size_t n) {
     // Similar to bpf_strstr but only searches the first n characters of s1
     int i, j;
     for (i = 0; i < n; i++) {
